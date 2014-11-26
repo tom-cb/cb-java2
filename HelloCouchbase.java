@@ -49,6 +49,27 @@ public class HelloCouchbase {
 			upsertBatch(bucket, documents, b);
 		}
 
+		for (int i=0; i< NUM_BATCHES; i++) {
+			for (int j=0; j< DOCS_PER_BATCH; j++) {
+				final String k = "key-" + j + "-batch-" + i;
+				JsonDocument doc = documents.get(0);
+				final JsonDocument docForInsert = doc.from(doc, doc.id() + "-batch-" + i);
+
+            	bucket
+					.upsert(docForInsert)
+					.onErrorResumeNext(new Func1<Throwable, Observable<? extends JsonDocument>>() {
+						@Override
+					 	public Observable<? extends JsonDocument> call(Throwable throwable) {
+							if (throwable instanceof TimeoutException) {
+								System.out.println("Timeout: rescheduling " + k);
+								return bucket.upsert(docForInsert); 
+							}
+							return Observable.error(throwable);
+						}
+					});
+			}
+		}
+
 		final CountDownLatch latch = new CountDownLatch(DOCS_PER_BATCH * NUM_BATCHES);
 
 		long t1 = System.nanoTime();
