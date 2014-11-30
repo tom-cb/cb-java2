@@ -8,6 +8,7 @@ import rx.Observable;
 import rx.Subscriber;
 import rx.functions.Action1;
 import rx.functions.Func1;
+import rx.functions.Func0;
 
 
 //TOM
@@ -17,18 +18,35 @@ import java.util.concurrent.TimeUnit;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ConcurrentHashMap;
+
+//Stats helpers
+import org.apache.commons.math3.stat.descriptive.DescriptiveStatistics;
+
+class TimingPair {
+        public long start;
+        public long end;
+
+        public TimingPair(long x, long y) {
+            this.start = x;
+            this.end = y;
+        }
+}
 
 public class HelloCouchbase {
 
 	static final int NUM_DOCS = 100;  //number of documents to work on
 	static final int DOC_SIZE = 1000; //approx size of doc in KB
-    static final int DOCS_PER_BATCH = 10000; // Number of docs to fire off in a single batch
-	static final int NUM_BATCHES = 10;
+    static final int DOCS_PER_BATCH = 1000; // Number of docs to fire off in a single batch
+	static final int NUM_BATCHES = 1;
+
 
 	public static void main(String[] args) throws Exception {
-		Cluster cluster = CouchbaseCluster.create("127.0.0.1");
+		Cluster cluster = CouchbaseCluster.create("192.168.27.101");
 		final Bucket syncBucket = cluster.openBucket();
 		final AsyncBucket bucket = syncBucket.async();
+
+		final DescriptiveStatistics stats = new DescriptiveStatistics();
 
 		JsonObject user = JsonObject.empty()
 		.put("description", "json object with a string of random data to bulk up the size");
@@ -45,30 +63,66 @@ public class HelloCouchbase {
     		documents.add(JsonDocument.create("key-"+i, content));
 		}
 
-		for (int b=0; b < NUM_BATCHES; b++) {
-			upsertBatch(bucket, documents, b);
-		}
+		//for (int b=0; b < NUM_BATCHES; b++) {
+		//	upsertBatch(bucket, documents, b);
+		//}
+		final ConcurrentHashMap<String, TimingPair> timingMap = new ConcurrentHashMap<String, TimingPair>();
+
+		final CountDownLatch setLatch = new CountDownLatch(DOCS_PER_BATCH * NUM_BATCHES);
 
 		for (int i=0; i< NUM_BATCHES; i++) {
 			for (int j=0; j< DOCS_PER_BATCH; j++) {
 				final String k = "key-" + j + "-batch-" + i;
-				JsonDocument doc = documents.get(0);
+				JsonDocument doc = documents.get(j);
 				final JsonDocument docForInsert = doc.from(doc, doc.id() + "-batch-" + i);
+				
+				Observable
+					.defer(new Func0<Observable<JsonDocument>>() {
+     					@Override
+        					public Observable<JsonDocument> call() {
+							timingMap.put(docForInsert.id(), new TimingPair(System.nanoTime(),0) );
 
-            	bucket
-					.upsert(docForInsert)
-					.onErrorResumeNext(new Func1<Throwable, Observable<? extends JsonDocument>>() {
+            				return bucket.upsert(docForInsert, ReplicateTo.ONE);
+        				}
+    				})
+					.timeout(500, TimeUnit.MILLISECONDS)
+					.retryWhen(new RetryWithDelay(20, 500))
+					.subscribe(new Subscriber<JsonDocument>() {
 						@Override
-					 	public Observable<? extends JsonDocument> call(Throwable throwable) {
-							if (throwable instanceof TimeoutException) {
-								System.out.println("Timeout: rescheduling " + k);
-								return bucket.upsert(docForInsert); 
-							}
-							return Observable.error(throwable);
+						public void onNext(JsonDocument document) {
+							//System.out.println("stored doc: " + docForInsert.id());
+							timingMap.get(document.id()).end = System.nanoTime();
+							setLatch.countDown();						
 						}
+						
+						@Override
+						public void onCompleted(){
+						}
+
+						@Override
+						public void onError(Throwable throwable) {
+							System.out.println("Error: " + throwable.getMessage());
+						}
+					
 					});
+
+				Thread.sleep(10);
 			}
 		}
+
+		setLatch.await();
+		System.out.println("Completed write phase!");
+
+		for(ConcurrentHashMap.Entry<String, TimingPair> entry : timingMap.entrySet()) {
+			String k = entry.getKey();
+			TimingPair v = entry.getValue();
+
+			stats.addValue((v.end-v.start)/1000000);
+			System.out.println("Write time for key: " + k + " in ms: " + (v.end - v.start)/1000000);
+		}
+
+		System.out.println("95th Percentile: " + stats.getPercentile(95));
+		System.exit(0);
 
 		final CountDownLatch latch = new CountDownLatch(DOCS_PER_BATCH * NUM_BATCHES);
 
