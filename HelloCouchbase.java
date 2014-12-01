@@ -12,6 +12,7 @@ import rx.functions.Func0;
 
 
 //TOM
+import java.util.logging.*;
 import java.util.Random;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.TimeUnit;
@@ -39,14 +40,23 @@ public class HelloCouchbase {
 	static final int DOC_SIZE = 1000; //approx size of doc in KB
     static final int DOCS_PER_BATCH = 1000; // Number of docs to fire off in a single batch
 	static final int NUM_BATCHES = 1;
-
+	static final String CB_HOST = "192.168.27.101";
 
 	public static void main(String[] args) throws Exception {
-		Cluster cluster = CouchbaseCluster.create("192.168.27.101");
+
+		// SETUP LOGGING
+		Logger logger = Logger.getLogger("com.couchbase.client");
+		logger.setLevel(Level.FINE);
+		for(Handler h : logger.getParent().getHandlers()) {
+    		if(h instanceof ConsoleHandler){
+        		h.setLevel(Level.FINE);
+    		}
+		}
+
+		Cluster cluster = CouchbaseCluster.create(CB_HOST);
 		final Bucket syncBucket = cluster.openBucket();
 		final AsyncBucket bucket = syncBucket.async();
 
-		final DescriptiveStatistics stats = new DescriptiveStatistics();
 
 		JsonObject user = JsonObject.empty()
 		.put("description", "json object with a string of random data to bulk up the size");
@@ -54,7 +64,7 @@ public class HelloCouchbase {
 		//Generate a random string to bulk up doc size
 		String rndStr = randomString(DOC_SIZE);
 
-		// Generate a number of dummy JSON documents
+		// Generate a number of dummy JSON documents for storage + re-use
 		List<JsonDocument> documents = new ArrayList<JsonDocument>();
 		for (int i = 0; i < DOCS_PER_BATCH; i++) {
 		    JsonObject content = JsonObject.create()
@@ -63,11 +73,11 @@ public class HelloCouchbase {
     		documents.add(JsonDocument.create("key-"+i, content));
 		}
 
-		//for (int b=0; b < NUM_BATCHES; b++) {
-		//	upsertBatch(bucket, documents, b);
-		//}
+		//  For tracking statistical info such as response times
 		final ConcurrentHashMap<String, TimingPair> timingMap = new ConcurrentHashMap<String, TimingPair>();
+		final DescriptiveStatistics stats = new DescriptiveStatistics();
 
+		//To check when all documents have been successfully stored
 		final CountDownLatch setLatch = new CountDownLatch(DOCS_PER_BATCH * NUM_BATCHES);
 
 		for (int i=0; i< NUM_BATCHES; i++) {
@@ -90,9 +100,11 @@ public class HelloCouchbase {
 					.subscribe(new Subscriber<JsonDocument>() {
 						@Override
 						public void onNext(JsonDocument document) {
-							//System.out.println("stored doc: " + docForInsert.id());
+							//This doc has been successfully stored
+
 							timingMap.get(document.id()).end = System.nanoTime();
 							setLatch.countDown();						
+							System.out.println("stored doc: " + docForInsert.id());
 						}
 						
 						@Override
@@ -106,13 +118,14 @@ public class HelloCouchbase {
 					
 					});
 
-				Thread.sleep(10);
+				Thread.sleep(100);
 			}
 		}
 
 		setLatch.await();
 		System.out.println("Completed write phase!");
 
+		// Post process and output the statistical results
 		for(ConcurrentHashMap.Entry<String, TimingPair> entry : timingMap.entrySet()) {
 			String k = entry.getKey();
 			TimingPair v = entry.getValue();
@@ -124,6 +137,7 @@ public class HelloCouchbase {
 		System.out.println("95th Percentile: " + stats.getPercentile(95));
 		System.exit(0);
 
+        /* Ignore everything after here, this is scratch code */
 		final CountDownLatch latch = new CountDownLatch(DOCS_PER_BATCH * NUM_BATCHES);
 
 		long t1 = System.nanoTime();
