@@ -33,7 +33,7 @@ public class RetryWithDelay implements
                     if (++retryCount < maxRetries) { // && errorThrowable instanceof TimeoutException) {
                         // When this Observable calls onNext, the original
                         // Observable will be retried (i.e. re-subscribed).
-						int delay = (retryDelayMillis * (retryCount == 0 ? 1 : retryCount * 2));
+						int delay = (retryDelayMillis << (retryCount - 1));
 						System.out.println("Issuing retry in: " + delay + "ms");
                         return Observable.timer(delay, TimeUnit.MILLISECONDS);
                     }
