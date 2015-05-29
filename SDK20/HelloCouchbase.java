@@ -37,10 +37,10 @@ class TimingPair {
 public class HelloCouchbase {
 
 	static final int NUM_DOCS = 100;  //number of documents to work on
-	static final int DOC_SIZE = 1000; //approx size of doc in KB
+	static final int DOC_SIZE = 100; //approx size of doc in KB
     static final int DOCS_PER_BATCH = 1000; // Number of docs to fire off in a single batch
 	static final int NUM_BATCHES = 1;
-	static final String CB_HOST = "192.168.27.101";
+	static final String CB_HOST = "127.0.0.1";
 
 	public static void main(String[] args) throws Exception {
 
@@ -92,7 +92,7 @@ public class HelloCouchbase {
         					public Observable<JsonDocument> call() {
 							timingMap.put(docForInsert.id(), new TimingPair(System.nanoTime(),0) );
 
-            				return bucket.upsert(docForInsert, ReplicateTo.ONE);
+            				return bucket.upsert(docForInsert);
         				}
     				})
 					.timeout(500, TimeUnit.MILLISECONDS)
@@ -118,8 +118,8 @@ public class HelloCouchbase {
 					
 					});
 
-				Thread.sleep(100);
 			}
+				Thread.sleep(100);
 		}
 
 		setLatch.await();
@@ -135,16 +135,19 @@ public class HelloCouchbase {
 		}
 
 		System.out.println("95th Percentile: " + stats.getPercentile(95));
-		System.exit(0);
 
-        /* Ignore everything after here, this is scratch code */
+		/* GET PHASE */
 		final CountDownLatch latch = new CountDownLatch(DOCS_PER_BATCH * NUM_BATCHES);
+		//  For tracking statistical info such as response times
+		final ConcurrentHashMap<String, TimingPair> timingMapGets = new ConcurrentHashMap<String, TimingPair>();
+		final DescriptiveStatistics statsGets = new DescriptiveStatistics();
 
-		long t1 = System.nanoTime();
 
 		for (int i=0; i< NUM_BATCHES; i++) {
 			for (int j=0; j< DOCS_PER_BATCH; j++) {
 			final String k = "key-" + j + "-batch-" + i;
+
+		 	timingMapGets.put(k , new TimingPair(System.nanoTime(),0) );
 
 			bucket
     		.get(k)
@@ -161,8 +164,9 @@ public class HelloCouchbase {
  			.subscribe(new Action1<JsonDocument>() {
         		@Override
         		public void call(JsonDocument document) {
+					timingMapGets.get(k).end = System.nanoTime();
 					latch.countDown();
-            		//System.out.println("Got: " + document);
+            		System.out.println("Got: " + document.id());
         		}
 			});
 		}
@@ -171,7 +175,17 @@ public class HelloCouchbase {
  		latch.await();
 		long t2 = System.nanoTime();
 
-		System.out.println("Time: " + ((t2 - t1)/1000000)/NUM_DOCS + " ms");
+		// Post process and output the statistical results
+		for(ConcurrentHashMap.Entry<String, TimingPair> entry : timingMapGets.entrySet()) {
+			String k = entry.getKey();
+			TimingPair v = entry.getValue();
+
+			statsGets.addValue((v.end-v.start)/1000000);
+			System.out.println("Get time for key: " + k + " in ms: " + (v.end - v.start)/1000000);
+		}
+
+
+		System.out.println("95th Percentile: " + statsGets.getPercentile(95));
 
 
 		cluster.disconnect();
